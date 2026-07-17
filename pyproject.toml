@@ -1,7 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "kinetics-54k-rewrite"
 version = "0.1.0"
-description = "Add your description here"
+description = "Rewrite ground-truth captions of the kinetics_54K dataset with a video VLM (Gemma-4)"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "transformers>=5.12",
+    "accelerate>=1.0",
+    "torch==2.5.1",
+    "torchvision==0.20.1",
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "opencv-python-headless>=4.10",
+    "requests>=2.32",
+    "huggingface-hub>=0.30",
+    "python-dotenv>=1.0",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+rewrite-captions = "rewrite.cli:main"
+fetch-videos = "rewrite.videos.fetch:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }
+torchvision = { index = "pytorch-cu121" }
