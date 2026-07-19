@@ -52,11 +52,20 @@ uv run rewrite-captions annotations/splits-SQ/test.json \
 - `--limit`: rewrite only the first N records (the rest are copied unchanged).
 - `--repo-id`: dataset repo to download annotations from (default:
   `bear7011/gemma-4-e4b-kinetics_54K`).
+- `--workers`: model replicas run in parallel (default `auto`: one replica on
+  every GPU with enough free memory, estimated from the checkpoint's
+  safetensors metadata — no manual tuning needed). Falls back to a single
+  instance sharded across GPUs when one GPU cannot hold the model; `--workers 1`
+  forces that mode.
 - `--num-frames` (8), `--max-new-tokens` (64), `--dtype` (bfloat16),
-  `--device-map` (auto), `--save-every` (checkpoint interval, 25).
+  `--device-map` (auto; single-worker mode only), `--save-every` (checkpoint
+  interval, 25; single-worker mode only).
 
 Each video is decoded into `--num-frames` evenly spaced frames and fed to the
 model together with the record's own system/user prompts; generation is greedy.
+With multiple workers, records are split into contiguous slices, each worker
+streams its captions to a JSONL part file (so a crash loses nothing already
+done), and the parts are merged into the final output.
 
 ## Layout
 
@@ -64,6 +73,9 @@ model together with the record's own system/user prompts; generation is greedy.
 src/rewrite/
 ├── cli.py            # rewrite-captions entry point
 ├── pipeline.py       # rewrite loop (load → caption → save)
+├── hardware.py       # replica planner (fits one model copy per free GPU)
+├── parallel.py       # multi-worker orchestrator (spawn, progress, merge)
+├── worker.py         # per-GPU worker (python -m rewrite.worker)
 ├── annotations/      # JSON I/O + record accessors (only assistant text is mutated)
 ├── model/            # Gemma-4 captioner (frames-as-images chat inference)
 └── videos/           # video path resolution, frame sampling, shard fetcher

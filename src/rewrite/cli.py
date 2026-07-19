@@ -53,9 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model dtype (default: bfloat16)",
     )
     parser.add_argument(
+        "--workers",
+        default="auto",
+        help='Model replicas to run in parallel: an integer, or "auto" (default) to '
+        "fit one replica per GPU with enough free memory. Falls back to a single "
+        "instance sharded across GPUs when one GPU cannot hold the model.",
+    )
+    parser.add_argument(
         "--device-map",
         default="auto",
-        help='Passed to from_pretrained (default: "auto")',
+        help='Passed to from_pretrained; only used when running a single worker (default: "auto")',
     )
     parser.add_argument(
         "--save-every",
@@ -81,7 +88,41 @@ def main(argv: list[str] | None = None) -> None:
         else annotation_file.with_name(annotation_file.stem + ".rewritten.json")
     )
 
-    # Import lazily so `--help` stays fast and dependency-light.
+    if args.workers == "auto":
+        requested = None
+    else:
+        try:
+            requested = int(args.workers)
+        except ValueError:
+            raise SystemExit(f'--workers must be an integer or "auto", got {args.workers!r}')
+        if requested < 1:
+            raise SystemExit("--workers must be >= 1")
+
+    token = os.environ.get("HF_TOKEN")
+
+    if requested != 1:
+        # Import lazily so `--help` stays fast and dependency-light.
+        from rewrite.hardware import plan_replicas
+
+        plan = plan_replicas(args.model, args.dtype, token=token, requested=requested, max_useful=args.limit)
+        print(f"worker plan: {plan.num_workers} ({plan.reason})")
+        if plan.num_workers > 1:
+            from rewrite.parallel import rewrite_parallel
+
+            rewrite_parallel(
+                annotation_file=annotation_file,
+                output_file=output_file,
+                model_id=args.model,
+                devices=plan.devices,
+                video_root=args.video_root,
+                limit=args.limit,
+                num_frames=args.num_frames,
+                max_new_tokens=args.max_new_tokens,
+                dtype=args.dtype,
+            )
+            print(f"Wrote {output_file}")
+            return
+
     from rewrite.model import Captioner
     from rewrite.pipeline import rewrite_annotations
 
