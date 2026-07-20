@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -34,6 +35,17 @@ def _resolve_url(repo_id: str, path_in_repo: str) -> str:
 
 def _auth_headers(token: str | None) -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _retry_after_seconds(resp: requests.Response, default: float) -> float:
+    """How long to wait after a 429, honoring the ``Retry-After`` header if sane."""
+    value = resp.headers.get("Retry-After")
+    if value:
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            pass  # HTTP-date form is rare here; fall back to our backoff
+    return default
 
 
 def load_manifest(repo_id: str, token: str | None) -> dict:
@@ -73,6 +85,12 @@ def _member_name(block: bytes) -> str:
 class _ShardReader:
     """Ranged reads against one shard, reusing the resolved CDN URL."""
 
+    # Retries cover two transient cases: an expired presigned CDN URL (re-resolve)
+    # and HTTP 429 rate limiting (wait, then retry with exponential backoff).
+    MAX_ATTEMPTS = 10
+    BACKOFF_START = 1.0
+    BACKOFF_CAP = 60.0
+
     def __init__(self, repo_id: str, repo_path: str, token: str | None):
         self.resolve_url = _resolve_url(repo_id, repo_path)
         self.token = token
@@ -81,7 +99,8 @@ class _ShardReader:
 
     def read(self, offset: int, length: int) -> bytes:
         headers = {"Range": f"bytes={offset}-{offset + length - 1}"}
-        for attempt in range(2):
+        backoff = self.BACKOFF_START
+        for _attempt in range(self.MAX_ATTEMPTS):
             if self.cdn_url is None:
                 resp = self.session.get(
                     self.resolve_url,
@@ -95,6 +114,10 @@ class _ShardReader:
                 if resp.status_code in (401, 403):  # presigned URL expired
                     self.cdn_url = None
                     continue
+            if resp.status_code == 429:  # rate limited: wait, then retry
+                time.sleep(_retry_after_seconds(resp, backoff))
+                backoff = min(backoff * 2, self.BACKOFF_CAP)
+                continue
             resp.raise_for_status()
             return resp.content
         raise RuntimeError(f"Could not read range from {self.resolve_url}")
@@ -147,7 +170,7 @@ def fetch_videos(
     dest: str | Path = "videos",
     repo_id: str = DEFAULT_REPO_ID,
     limit: int | None = None,
-    workers: int = 8,
+    workers: int = 6,
     token: str | None = None,
 ) -> None:
     dest = Path(dest)
@@ -212,7 +235,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--dest", default="videos", help="Local video root (default: videos)")
     parser.add_argument("--repo-id", default=DEFAULT_REPO_ID, help=f"HF dataset repo (default: {DEFAULT_REPO_ID})")
     parser.add_argument("--limit", type=int, default=None, help="Only consider the first N records")
-    parser.add_argument("--workers", type=int, default=8, help="Parallel shard scanners (default: 8)")
+    parser.add_argument("--workers", type=int, default=6, help="Parallel shard scanners (default: 6)")
     args = parser.parse_args(argv)
 
     fetch_videos(
